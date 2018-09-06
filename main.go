@@ -11,8 +11,11 @@ import (
 )
 
 var (
-	pkgs   map[string]*build.Package
-	ids    map[string]int
+	pkgs        map[string]*build.Package
+	ids         map[string]int
+	colorSubst  map[string]string
+	prefixSubst map[string]string
+
 	nextId int
 
 	ignored = map[string]bool{
@@ -21,15 +24,17 @@ var (
 	ignoredPrefixes []string
 	onlyPrefixes    []string
 
-	ignoreStdlib   = flag.Bool("s", false, "ignore packages in the Go standard library")
-	delveGoroot    = flag.Bool("d", false, "show dependencies of packages in the Go standard library")
-	ignorePrefixes = flag.String("p", "", "a comma-separated list of prefixes to ignore")
-	ignorePackages = flag.String("i", "", "a comma-separated list of packages to ignore")
-	onlyPrefix     = flag.String("o", "", "a comma-separated list of prefixes to include")
-	tagList        = flag.String("tags", "", "a comma-separated list of build tags to consider satisified during the build")
-	horizontal     = flag.Bool("horizontal", false, "lay out the dependency graph horizontally instead of vertically")
-	includeTests   = flag.Bool("t", false, "include test packages")
-	maxLevel       = flag.Int("l", 256, "max level of go dependency graph")
+	ignoreStdlib       = flag.Bool("s", false, "ignore packages in the Go standard library")
+	delveGoroot        = flag.Bool("d", false, "show dependencies of packages in the Go standard library")
+	ignorePrefixes     = flag.String("p", "", "a comma-separated list of prefixes to ignore")
+	ignorePackages     = flag.String("i", "", "a comma-separated list of packages to ignore")
+	onlyPrefix         = flag.String("o", "", "a comma-separated list of prefixes to include")
+	tagList            = flag.String("tags", "", "a comma-separated list of build tags to consider satisified during the build")
+	horizontal         = flag.Bool("horizontal", false, "lay out the dependency graph horizontally instead of vertically")
+	includeTests       = flag.Bool("t", false, "include test packages")
+	maxLevel           = flag.Int("l", 256, "max level of go dependency graph")
+	prefixSubstitution = flag.String("r", "", "a comma-separeated list of prefix replacement, e.g. github.com=g")
+	colorSpec          = flag.String("c", "", "a comma-separated list of color spec, e.g. github.com=red")
 
 	buildTags    []string
 	buildContext = build.Default
@@ -38,6 +43,8 @@ var (
 func main() {
 	pkgs = make(map[string]*build.Package)
 	ids = make(map[string]int)
+	colorSubst = make(map[string]string)
+	prefixSubst = make(map[string]string)
 	flag.Parse()
 
 	args := flag.Args()
@@ -61,6 +68,32 @@ func main() {
 		buildTags = strings.Split(*tagList, ",")
 	}
 	buildContext.BuildTags = buildTags
+
+	if *colorSpec != "" {
+		colors := strings.Split(*colorSpec, ",")
+		for _, c := range colors {
+			spec := strings.Split(c, "=")
+			if len(spec) != 2 {
+				log.Fatalf("wrong color spec: %s", c)
+			}
+			colorSubst[spec[0]] = spec[1]
+		}
+	}
+
+	if *prefixSubstitution != "" {
+		prefixes := strings.Split(*prefixSubstitution, ",")
+		for _, p := range prefixes {
+			spec := strings.Split(p, "=")
+			specLen := len(spec)
+			if specLen < 1 || specLen > 2 {
+				log.Fatalf("wrong prefix substitution spec: %s", spec)
+			} else if specLen == 1 {
+				prefixSubst[spec[0]] = ""
+			} else if specLen == 2 {
+				prefixSubst[spec[0]] = spec[1]
+			}
+		}
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -101,7 +134,7 @@ func main() {
 			color = "paleturquoise"
 		}
 
-		fmt.Printf("_%d [label=\"%s\" style=\"filled\" color=\"%s\"];\n", pkgId, pkgName, color)
+		fmt.Printf("_%d [label=\"%s\" style=\"filled\" color=\"%s\"];\n", pkgId, processName(pkgName), processColor(pkgName, color))
 
 		// Don't render imports from packages in Goroot
 		if pkg.Goroot && !*delveGoroot {
@@ -119,6 +152,29 @@ func main() {
 		}
 	}
 	fmt.Println("}")
+}
+
+func processColor(name, color string) string {
+	foundPrefixLen := 0
+	for prefix, c := range colorSubst {
+		if strings.HasPrefix(name, prefix) && len(prefix) > foundPrefixLen {
+			color = c
+			foundPrefixLen = len(prefix)
+		}
+	}
+	return color
+}
+
+func processName(name string) string {
+	newName := name
+	foundPrefix := 0
+	for prefix, subst := range prefixSubst {
+		if strings.HasPrefix(name, prefix) && len(prefix) > foundPrefix {
+			newName = subst + strings.TrimPrefix(name, prefix)
+			foundPrefix = len(prefix)
+		}
+	}
+	return newName
 }
 
 func processPackage(root string, pkgName string, level int) error {
@@ -213,5 +269,5 @@ func debugf(s string, args ...interface{}) {
 
 func normalizeVendor(path string) string {
 	pieces := strings.Split(path, "vendor/")
-	return pieces[len(pieces) - 1]
+	return pieces[len(pieces)-1]
 }
